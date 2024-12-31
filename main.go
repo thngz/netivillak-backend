@@ -15,22 +15,23 @@ import (
 )
 
 type Question struct {
-	clue   string
-	answer string
-	col    int
-	row    int
-	points int
-	opened bool
+	Clue   string `json:"clue"`
+	Answer string `json:"answer"`
+	Points int    `json:"points"`
+	Category string    `json:"category"`
+	Col    int    `json:"col"`
+	Row    int    `json:"row"`
+	// Opened bool   `json:"opened"`
 }
 
 type GameState struct {
-	questions []Question
-	category  string
+	Questions []Question `json:"questions"`
+	Category  string     `json:"category"`
 }
 
 type Lobby struct {
 	conns        map[*websocket.Conn]bool
-	initialState *GameState
+	initialState *[]GameState
 	name         string
 }
 
@@ -84,6 +85,7 @@ func handleWs(w http.ResponseWriter, r *http.Request) {
 
 func createLobbyHandler(l *Lobbies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		lobby := InitLobby()
 
 		state, err := getState(r)
@@ -106,6 +108,7 @@ func createLobbyHandler(l *Lobbies) http.HandlerFunc {
 
 func joinLobbyHandler(l *Lobbies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		vars := mux.Vars(r)
 
 		id, ok := vars["id"]
@@ -128,22 +131,22 @@ func joinLobbyHandler(l *Lobbies) http.HandlerFunc {
 	}
 }
 
-func getState(r *http.Request) (*GameState, error) {
-	var data GameState
+func getState(r *http.Request) (*[]GameState, error) {
+	var data []GameState
 
 	defer r.Body.Close()
 
 	bytes, err := io.ReadAll(r.Body)
 
 	if err != nil {
-		slog.Error("Couldn't read game state", "body", string(bytes))
+		slog.Error("Couldn't read game state", "body", string(bytes[0:20]))
 		return nil, err
 	}
 
 	err = json.Unmarshal(bytes, &data)
 
 	if err != nil {
-		slog.Error("Couldn't unmarshal game state", "body", string(bytes))
+		slog.Error("Couldn't unmarshal game state", "body", string(bytes[0:20]), "err", err)
 		return nil, err
 	}
 
@@ -159,12 +162,12 @@ func main() {
 	}
 
 	r.HandleFunc("/ws", handleWs)
-	r.HandleFunc("/createlobby", createLobbyHandler(lobbies))
-	r.HandleFunc("/lobbies/{id}", joinLobbyHandler(lobbies))
+	r.HandleFunc("/createlobby", createLobbyHandler(lobbies)).Methods("POST")
+	r.HandleFunc("/lobbies/{id}", joinLobbyHandler(lobbies)).Methods("POST")
 
 	http.Handle("/", r)
 
-    slog.Info("Starting server on port :3000")
+	slog.Info("Starting server on port :3000")
 	err := http.ListenAndServe(":3000", nil)
 
 	if errors.Is(err, http.ErrServerClosed) {
