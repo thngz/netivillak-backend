@@ -39,6 +39,10 @@ type Lobbies struct {
 	lobbies map[string]*Lobby
 }
 
+type JoinRequest struct {
+	Code string `json:"code"`
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -51,41 +55,24 @@ func InitLobby() *Lobby {
 	}
 }
 
-func (l *Lobby) AddConnection(w http.ResponseWriter, r *http.Request) {
+func (l *Lobby) AddConnection(w http.ResponseWriter, r *http.Request) *websocket.Conn {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Warn("Couldn't add connection!")
-		return
+		slog.Warn("Couldn't add connection!", "err", err)
+		return nil
 	}
 	l.conns[conn] = true
 	slog.Info("Added connection", "origin", r.Header["Origin"], "lobby", l.name)
+	w.WriteHeader(http.StatusOK)
 	conn.WriteMessage(1, []byte("Connected to lobby"))
-}
-
-func handleWs(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	for {
-		messageType, p, err := conn.ReadMessage()
-
-		if err != nil {
-			fmt.Println("Read error", err)
-			continue
-		}
-		fmt.Println(messageType, string(p))
-
-		if err := conn.WriteMessage(1, []byte("hi from server")); err != nil {
-			fmt.Println("Error", err)
-		}
-	}
+    
+    return conn
 }
 
 func createLobbyHandler(l *Lobbies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+
 		lobby := InitLobby()
 
 		state, err := getState(r)
@@ -108,25 +95,36 @@ func createLobbyHandler(l *Lobbies) http.HandlerFunc {
 
 func joinLobbyHandler(l *Lobbies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var data JoinRequest
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		vars := mux.Vars(r)
 
-		id, ok := vars["id"]
+		defer r.Body.Close()
 
-		if !ok {
+		bytes, err := io.ReadAll(r.Body)
+
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Must include id"))
+			slog.Error("Couldn't read body of join lobby request", "body", string(bytes[0:20]), "err", err)
+			w.Write([]byte(err.Error()))
 			return
 		}
 
-		lobby, ok := l.lobbies[id]
+		err = json.Unmarshal(bytes, &data)
 
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			slog.Error("Couldn't unmarshal join lobby request", "body", string(bytes[0:20]), "err", err)
+			w.Write([]byte(err.Error()))
+			return
+		}
+
+		lobby, ok := l.lobbies[data.Code]
+		slog.Info(data.Code)
 		if !ok {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("No such lobby"))
 			return
 		}
-
 		lobby.AddConnection(w, r)
 	}
 }
@@ -161,9 +159,8 @@ func main() {
 		lobbies: make(map[string]*Lobby),
 	}
 
-	r.HandleFunc("/ws", handleWs)
 	r.HandleFunc("/createlobby", createLobbyHandler(lobbies)).Methods("POST")
-	r.HandleFunc("/lobbies/{id}", joinLobbyHandler(lobbies)).Methods("POST")
+	r.HandleFunc("/joinlobby", joinLobbyHandler(lobbies))
 
 	http.Handle("/", r)
 
