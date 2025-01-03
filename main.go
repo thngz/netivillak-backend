@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"netivillak/game"
+	"netivillak/lobby"
 	"netivillak/utils"
 	"os"
 
@@ -14,66 +16,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Question struct {
-	Clue     string `json:"clue"`
-	Answer   string `json:"answer"`
-	Points   int    `json:"points"`
-	Category string `json:"category"`
-	Col      int    `json:"col"`
-	Row      int    `json:"row"`
-	// Opened bool   `json:"opened"`
-}
-
-type GameState struct {
-	Questions []Question `json:"questions"`
-	Category  string     `json:"category"`
-}
-
-type Lobby struct {
-	conns        map[*websocket.Conn]bool
-	initialState *[]GameState
-	name         string
-}
-
-type Lobbies struct {
-	lobbies map[string]*Lobby
-}
-
-type JoinRequest struct {
-	Code string `json:"code"`
-}
-
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin:     func(r *http.Request) bool { return true }, // ignore origin for dev
 }
 
-func InitLobby() *Lobby {
-	return &Lobby{
-		conns: make(map[*websocket.Conn]bool),
-	}
-}
-
-func (l *Lobby) AddConnection(w http.ResponseWriter, r *http.Request) *websocket.Conn {
+func createConnection(w http.ResponseWriter, r *http.Request) *websocket.Conn {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Warn("Couldn't add connection!", "err", err)
 		return nil
 	}
-	l.conns[conn] = true
-	slog.Info("Added connection", "origin", r.Header["Origin"], "lobby", l.name)
-	w.WriteHeader(http.StatusOK)
-	conn.WriteMessage(1, []byte("Connected to lobby"))
-    
-    return conn
+	slog.Info("Created connection", "origin", r.Header["Origin"])
+	conn.WriteMessage(1, []byte("Connection made"))
+
+	return conn
 }
 
-func createLobbyHandler(l *Lobbies) http.HandlerFunc {
+func createLobbyHandler(l *lobby.Lobbies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		lobby := InitLobby()
+		lobby := lobby.InitLobby()
 
 		state, err := getState(r)
 
@@ -84,53 +49,44 @@ func createLobbyHandler(l *Lobbies) http.HandlerFunc {
 		}
 		id := utils.CreateRandomId(6)
 		slog.Info("Creating new lobby", "lobby id", id)
-		lobby.initialState = state
-		lobby.name = id
+		lobby.InitialState = state
+		lobby.Name = id
 
-		l.lobbies[id] = lobby
+		l.Lobbies[id] = lobby
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(id))
 	}
 }
 
-func joinLobbyHandler(l *Lobbies) http.HandlerFunc {
+func joinLobbyHandler(l *lobby.Lobbies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var data JoinRequest
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		conn := createConnection(w, r)
 
-		defer r.Body.Close()
+		for {
+			_, bytes, err := conn.ReadMessage()
 
-		bytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				slog.Warn("Read message error", "error", err)
+			}
 
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			slog.Error("Couldn't read body of join lobby request", "body", string(bytes[0:20]), "err", err)
-			w.Write([]byte(err.Error()))
-			return
+			id := string(bytes)
+			lobby, ok := l.Lobbies[id]
+
+			if !ok {
+				conn.WriteMessage(1, []byte("Invalid id!"))
+				// conn.Close()
+				slog.Warn("Connection invalid lobby id", "connection", conn.RemoteAddr().String(), "id", id)
+				continue
+			}
+
+			lobby.Conns[conn] = true
+			slog.Info("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
 		}
-
-		err = json.Unmarshal(bytes, &data)
-
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			slog.Error("Couldn't unmarshal join lobby request", "body", string(bytes[0:20]), "err", err)
-			w.Write([]byte(err.Error()))
-			return
-		}
-
-		lobby, ok := l.lobbies[data.Code]
-		slog.Info(data.Code)
-		if !ok {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("No such lobby"))
-			return
-		}
-		lobby.AddConnection(w, r)
 	}
 }
 
-func getState(r *http.Request) (*[]GameState, error) {
-	var data []GameState
+func getState(r *http.Request) (*[]game.GameState, error) {
+	var data []game.GameState
 
 	defer r.Body.Close()
 
@@ -155,10 +111,7 @@ func main() {
 
 	r := mux.NewRouter()
 
-	lobbies := &Lobbies{
-		lobbies: make(map[string]*Lobby),
-	}
-
+	lobbies := lobby.InitLobbies()
 	r.HandleFunc("/createlobby", createLobbyHandler(lobbies)).Methods("POST")
 	r.HandleFunc("/joinlobby", joinLobbyHandler(lobbies))
 
