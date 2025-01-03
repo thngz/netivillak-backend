@@ -7,13 +7,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"netivillak/game"
-	"netivillak/lobby"
-	"netivillak/utils"
 	"os"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+
+	"netivillak/game"
+	"netivillak/lobby"
+	"netivillak/utils"
 )
 
 var upgrader = websocket.Upgrader{
