@@ -1,5 +1,11 @@
 package message
 
+const (
+	CREATED_LOBBY = "createdLobby"
+	JOINED_LOBBY  = "joinedLobby"
+    PLAYERS_JOINED = "playersJoined"
+)
+
 type SuccessResponse struct {
 	Data SuccessMessage `json:"data"`
 	Kind string         `json:"kind"`
@@ -9,12 +15,12 @@ type SuccessMessage struct {
 	Message interface{} `json:"message"`
 }
 
-func InitSuccessResponse(msg interface{}) *SuccessResponse {
+func InitSuccessResponse(msg interface{}, kind string) *SuccessResponse {
 	return &SuccessResponse{
 		Data: SuccessMessage{
 			Message: msg,
 		},
-		Kind: "ok",
+		Kind: kind,
 	}
 }
 

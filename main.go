@@ -57,7 +57,7 @@ func createLobbyHandler(w http.ResponseWriter, r *http.Request) {
 	lobbies.Lobbies[code] = lobby
 	w.WriteHeader(http.StatusOK)
 
-	json.NewEncoder(w).Encode(message.InitSuccessResponse(code))
+	json.NewEncoder(w).Encode(message.InitSuccessResponse(code, message.CREATED_LOBBY))
 }
 
 func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
@@ -81,47 +81,21 @@ func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		lobby.Conns[conn] = true
-		conn.WriteJSON(message.InitSuccessResponse("Successfully joined lobby"))
+		conn.WriteJSON(message.InitSuccessResponse("Successfully joined lobby", message.JOINED_LOBBY))
 		slog.Info("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
-		broadcast(*lobby, "hi")
+
+		keys := make([]string, 0, len(lobby.Conns))
+		for c := range lobby.Conns {
+			keys = append(keys, c.RemoteAddr().String())
+		}
+
+		broadcast(*lobby, message.InitSuccessResponse(keys, message.PLAYERS_JOINED))
 	}
 }
 
-func getAllPlayersInLobbyHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	vars := mux.Vars(r)
-
-	id, ok := vars["id"]
-
-	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(message.InitFailureResponse("Invalid url"))
-		slog.Warn("Invalid request")
-		return
-	}
-
-	lobby, ok := lobbies.Lobbies[id]
-
-	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(message.InitFailureResponse("Invalid lobby id"))
-		slog.Warn("Invalid lobby id", "id", id)
-		return
-	}
-
-	keys := make([]string, 0, len(lobby.Conns))
-	for c := range lobby.Conns {
-		keys = append(keys, c.RemoteAddr().String())
-	}
-
-	slog.Info("Lobby state", "players", keys, "players joined", len(lobby.Conns))
-	json.NewEncoder(w).Encode(message.InitSuccessResponse(keys))
-}
-
-func broadcast(l lobby.Lobby, msg string) {
+func broadcast(l lobby.Lobby, msg *message.SuccessResponse) {
 	for c := range l.Conns {
-		c.WriteMessage(1, []byte(msg))
+		c.WriteJSON(msg)
 	}
 }
 
@@ -131,7 +105,6 @@ func main() {
 
 	r.HandleFunc("/createlobby", createLobbyHandler).Methods("POST")
 	r.HandleFunc("/joinlobby", joinLobbyHandler)
-	r.HandleFunc("/lobbies/{id}", getAllPlayersInLobbyHandler).Methods("GET")
 
 	http.Handle("/", r)
 
