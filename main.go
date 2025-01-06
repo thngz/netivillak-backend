@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +13,7 @@ import (
 
 	"netivillak/game"
 	"netivillak/lobby"
+	"netivillak/message"
 	"netivillak/utils"
 )
 
@@ -23,6 +23,8 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true }, // ignore origin for dev
 }
 
+var lobbies = lobby.InitLobbies()
+
 func createConnection(w http.ResponseWriter, r *http.Request) *websocket.Conn {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -30,91 +32,106 @@ func createConnection(w http.ResponseWriter, r *http.Request) *websocket.Conn {
 		return nil
 	}
 	slog.Info("Created connection", "origin", r.Header["Origin"])
-	conn.WriteMessage(1, []byte("Connection made"))
-
 	return conn
 }
 
-func createLobbyHandler(l *lobby.Lobbies) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+func createLobbyHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
 
-		lobby := lobby.InitLobby()
+	lobby := lobby.InitLobby()
 
-		state, err := getState(r)
+	state, err := game.InitGameState(r)
+
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("Couldn't create lobby"))
+		return
+	}
+
+	code := utils.CreateRandomId(6)
+	slog.Info("Creating new lobby", "lobby id", code)
+	lobby.InitialState = state
+	lobby.Name = code
+
+	lobbies.Lobbies[code] = lobby
+	w.WriteHeader(http.StatusOK)
+
+	json.NewEncoder(w).Encode(message.InitSuccessResponse(code))
+}
+
+func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
+	conn := createConnection(w, r)
+
+	for {
+		_, bytes, err := conn.ReadMessage()
 
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Couldn't create lobby"))
-			return
+			slog.Warn("Read message error", "error", err)
+			conn.WriteJSON(message.InitFailureResponse(err.Error()))
 		}
-		id := utils.CreateRandomId(6)
-		slog.Info("Creating new lobby", "lobby id", id)
-		lobby.InitialState = state
-		lobby.Name = id
 
-		l.Lobbies[id] = lobby
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(id))
+		id := string(bytes)
+		lobby, ok := lobbies.Lobbies[id]
+
+		if !ok {
+			slog.Warn("Connection invalid lobby id", "connection", conn.RemoteAddr().String(), "id", id)
+			conn.WriteJSON(message.InitFailureResponse(fmt.Sprintf("Lobby with id %s not found!", id)))
+			continue
+		}
+
+		lobby.Conns[conn] = true
+		conn.WriteJSON(message.InitSuccessResponse("Successfully joined lobby"))
+		slog.Info("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
+		broadcast(*lobby, "hi")
 	}
 }
 
-func joinLobbyHandler(l *lobby.Lobbies) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		conn := createConnection(w, r)
+func getAllPlayersInLobbyHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	vars := mux.Vars(r)
 
-		for {
-			_, bytes, err := conn.ReadMessage()
+	id, ok := vars["id"]
 
-			if err != nil {
-				slog.Warn("Read message error", "error", err)
-			}
-
-			id := string(bytes)
-			lobby, ok := l.Lobbies[id]
-
-			if !ok {
-				conn.WriteMessage(1, []byte("Invalid id!"))
-				// conn.Close()
-				slog.Warn("Connection invalid lobby id", "connection", conn.RemoteAddr().String(), "id", id)
-				continue
-			}
-
-			lobby.Conns[conn] = true
-			slog.Info("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
-		}
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(message.InitFailureResponse("Invalid url"))
+		slog.Warn("Invalid request")
+		return
 	}
+
+	lobby, ok := lobbies.Lobbies[id]
+
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(message.InitFailureResponse("Invalid lobby id"))
+		slog.Warn("Invalid lobby id", "id", id)
+		return
+	}
+
+	keys := make([]string, 0, len(lobby.Conns))
+	for c := range lobby.Conns {
+		keys = append(keys, c.RemoteAddr().String())
+	}
+
+	slog.Info("Lobby state", "players", keys, "players joined", len(lobby.Conns))
+	json.NewEncoder(w).Encode(message.InitSuccessResponse(keys))
 }
 
-func getState(r *http.Request) (*[]game.GameState, error) {
-	var data []game.GameState
-
-	defer r.Body.Close()
-
-	bytes, err := io.ReadAll(r.Body)
-
-	if err != nil {
-		slog.Error("Couldn't read game state", "body", string(bytes[0:20]))
-		return nil, err
+func broadcast(l lobby.Lobby, msg string) {
+	for c := range l.Conns {
+		c.WriteMessage(1, []byte(msg))
 	}
-
-	err = json.Unmarshal(bytes, &data)
-
-	if err != nil {
-		slog.Error("Couldn't unmarshal game state", "body", string(bytes[0:20]), "err", err)
-		return nil, err
-	}
-
-	return &data, nil
 }
 
 func main() {
 
 	r := mux.NewRouter()
 
-	lobbies := lobby.InitLobbies()
-	r.HandleFunc("/createlobby", createLobbyHandler(lobbies)).Methods("POST")
-	r.HandleFunc("/joinlobby", joinLobbyHandler(lobbies))
+	r.HandleFunc("/createlobby", createLobbyHandler).Methods("POST")
+	r.HandleFunc("/joinlobby", joinLobbyHandler)
+	r.HandleFunc("/lobbies/{id}", getAllPlayersInLobbyHandler).Methods("GET")
 
 	http.Handle("/", r)
 
