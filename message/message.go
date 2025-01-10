@@ -1,9 +1,9 @@
 package message
 
 const (
-	CREATED_LOBBY = "createdLobby"
-	JOINED_LOBBY  = "joinedLobby"
-    PLAYERS_JOINED = "playersJoined"
+	CREATED_LOBBY  = "createdLobby"
+	JOINED_LOBBY   = "joinedLobby"
+	PLAYERS_JOINED = "playersJoined"
 )
 
 type SuccessResponse struct {

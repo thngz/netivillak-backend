@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,9 +12,9 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 
-	"netivillak/game"
 	"netivillak/lobby"
 	"netivillak/message"
+	"netivillak/player"
 	"netivillak/utils"
 )
 
@@ -39,63 +40,86 @@ func createLobbyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	lobby := lobby.InitLobby()
+	var lobbyRequestData lobby.InitLobbyRequest
 
-	state, err := game.InitGameState(r)
+	defer r.Body.Close()
+
+	bytes, err := io.ReadAll(r.Body)
 
 	if err != nil {
+		slog.Error("Couldn't read game state", "body", string(bytes[0:20]))
+	}
+
+	err = json.Unmarshal(bytes, &lobbyRequestData)
+
+	if err != nil {
+		slog.Error("Couldn't unmarshal init lobby data", "err", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("Couldn't create lobby"))
 		return
 	}
 
 	code := utils.CreateRandomId(6)
+	lobby := lobby.InitLobby(&lobbyRequestData)
+
 	slog.Info("Creating new lobby", "lobby id", code)
-	lobby.InitialState = state
-	lobby.Name = code
 
 	lobbies.Lobbies[code] = lobby
 	w.WriteHeader(http.StatusOK)
 
-	json.NewEncoder(w).Encode(message.InitSuccessResponse(code, message.CREATED_LOBBY))
+	payload := struct {
+		code   string
+		player player.Player
+	}{
+		code:   code,
+		player: lobby.Creator,
+	}
+
+	json.NewEncoder(w).Encode(message.InitSuccessResponse(payload, message.CREATED_LOBBY))
+}
+
+type JoinLobbyRequest struct {
+	Code     string `json:"code"`
+	Nickname string `json:"nickname"`
 }
 
 func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
 	conn := createConnection(w, r)
+	var req JoinLobbyRequest
 
 	for {
-		_, bytes, err := conn.ReadMessage()
+
+		err := conn.ReadJSON(req)
 
 		if err != nil {
 			slog.Warn("Read message error", "error", err)
 			conn.WriteJSON(message.InitFailureResponse(err.Error()))
 		}
 
-		id := string(bytes)
-		lobby, ok := lobbies.Lobbies[id]
+		lobby, ok := lobbies.Lobbies[req.Code]
 
 		if !ok {
-			slog.Warn("Connection invalid lobby id", "connection", conn.RemoteAddr().String(), "id", id)
-			conn.WriteJSON(message.InitFailureResponse(fmt.Sprintf("Lobby with id %s not found!", id)))
+			slog.Debug("Connection invalid lobby id", "connection", conn.RemoteAddr().String(), "id", req.Code)
+			conn.WriteJSON(message.InitFailureResponse(fmt.Sprintf("Lobby with id %s not found!", req.Code)))
 			continue
 		}
 
-		lobby.Conns[conn] = true
 		conn.WriteJSON(message.InitSuccessResponse("Successfully joined lobby", message.JOINED_LOBBY))
-		slog.Info("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
+		slog.Debug("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
 
-		keys := make([]string, 0, len(lobby.Conns))
-		for c := range lobby.Conns {
-			keys = append(keys, c.RemoteAddr().String())
+		nicknames := make([]string, 0, len(lobby.Players))
+
+		for _, p := range lobby.Players {
+			nicknames = append(nicknames, p.Nickname)
 		}
 
-		broadcast(*lobby, message.InitSuccessResponse(keys, message.PLAYERS_JOINED))
+		broadcast(*lobby, message.InitSuccessResponse(nicknames, message.PLAYERS_JOINED))
 	}
 }
 
-func broadcast(l lobby.Lobby, msg *message.SuccessResponse) {
-	for c := range l.Conns {
-		c.WriteJSON(msg)
+func broadcast(l lobby.Lobby, msg interface{}) {
+	for _, p := range l.Players {
+		p.SendMessage(msg)
 	}
 }
 
