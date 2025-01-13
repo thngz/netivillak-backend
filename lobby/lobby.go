@@ -11,26 +11,21 @@ type InitLobbyRequest struct {
 }
 
 type Lobby struct {
-	Players      []player.Player
-	Creator      player.Player
+	Players      []*player.Player
+	Creator      *player.Player
 	InitialState *[]game.GameRow
 	Name         string
 }
 
-func (l *Lobby) AddPlayer(player player.Player) {
+func (l *Lobby) AddPlayer(player *player.Player) {
 	l.Players = append(l.Players, player)
 }
 
 func InitLobby(r *InitLobbyRequest) *Lobby {
-
-	c := player.Player{
-		Nickname: r.CreatorNickName,
-		Points:   0,
-	}
-
+	c := player.Init(r.CreatorNickName)
+    
 	l := &Lobby{
 		Creator: c,
-		Players: make([]player.Player, 3),
 	}
 
 	l.AddPlayer(c)

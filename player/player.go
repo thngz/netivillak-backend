@@ -12,7 +12,14 @@ type Player struct {
 	Conn     *websocket.Conn
 }
 
+func Init(nickname string) *Player {
+	return &Player{
+		Nickname: nickname,
+		Points:   0,
+	}
+}
+
 func (p *Player) SendMessage(msg interface{}) {
-    slog.Info("Sending message to player", "player", p.Nickname)
+	slog.Info("Sending message to player", "player", p.Nickname)
 	p.Conn.WriteJSON(msg)
 }

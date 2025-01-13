@@ -68,13 +68,12 @@ func createLobbyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	payload := struct {
-		code   string
-		player player.Player
+		Code   string         `json:"code"`
+		Player *player.Player `json:"player"`
 	}{
-		code:   code,
-		player: lobby.Creator,
+		Code:   code,
+		Player: lobby.Creator,
 	}
-
 	json.NewEncoder(w).Encode(message.InitSuccessResponse(payload, message.CREATED_LOBBY))
 }
 
@@ -89,8 +88,7 @@ func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
 
 	for {
 
-		err := conn.ReadJSON(req)
-
+		err := conn.ReadJSON(&req)
 		if err != nil {
 			slog.Warn("Read message error", "error", err)
 			conn.WriteJSON(message.InitFailureResponse(err.Error()))
@@ -104,6 +102,14 @@ func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if lobby.Creator.Nickname == req.Nickname {
+			lobby.Creator.Conn = conn
+		} else {
+			p := player.Init(req.Nickname)
+			p.Conn = conn
+			lobby.AddPlayer(p)
+		}
+
 		conn.WriteJSON(message.InitSuccessResponse("Successfully joined lobby", message.JOINED_LOBBY))
 		slog.Debug("Connection ", conn.RemoteAddr().String(), "Joined successfully!")
 
@@ -112,7 +118,6 @@ func joinLobbyHandler(w http.ResponseWriter, r *http.Request) {
 		for _, p := range lobby.Players {
 			nicknames = append(nicknames, p.Nickname)
 		}
-
 		broadcast(*lobby, message.InitSuccessResponse(nicknames, message.PLAYERS_JOINED))
 	}
 }
